@@ -38,10 +38,10 @@ DEFAULT_WORKER_PERCENT_WITH_MENTOR = 60  # Процент с наставник�
 
 PRICE_NFT_BOT = "@PriceNFTbot"
 
-# ==================== ПОИСК ФОТО ВО ВСЕХ ДИРЕКТОРИЯХ ====================
+# ==================== ПОИСК ФОТО В ДИРЕКТОРИИ ====================
 def find_photo_file(filename="photo1.jpg"):
-    """Ищет файл фото во всех возможных директориях"""
-    # Получаем директорию, где находится main скрипт
+    """Ищет файл фото в директории бота"""
+    # Получаем директорию, где находится скрипт
     if getattr(sys, 'frozen', False):
         # Если собран в exe
         base_dir = os.path.dirname(sys.executable)
@@ -49,46 +49,30 @@ def find_photo_file(filename="photo1.jpg"):
         # Если запущен как .py
         base_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # Список возможных путей
-    possible_paths = [
-        os.path.join(base_dir, filename),
-        os.path.join(base_dir, "assets", filename),
-        os.path.join(base_dir, "images", filename),
-        os.path.join(base_dir, "img", filename),
-        os.path.join(base_dir, "photos", filename),
-        os.path.join(base_dir, "media", filename),
-        os.path.join(os.path.dirname(base_dir), "assets", filename),
-        os.path.join(os.path.dirname(base_dir), filename),
-        os.path.join(os.getcwd(), filename),
-        os.path.join(os.getcwd(), "assets", filename),
-        filename,  # Текущая директория
-    ]
+    # Ищем фото в основной директории
+    main_path = os.path.join(base_dir, filename)
+    if os.path.exists(main_path):
+        return main_path
     
-    # Проверяем каждый путь
-    for path in possible_paths:
-        if os.path.exists(path):
-            return path
+    # Ищем в папке assets (на случай если пользователь создал)
+    assets_path = os.path.join(base_dir, "assets", filename)
+    if os.path.exists(assets_path):
+        return assets_path
     
     return None
 
 # Ищем фото
 MAIN_MENU_PHOTO_PATH = find_photo_file("photo1.jpg")
 
-# Если не нашли, создаем заглушку
+# Если не нашли, просто запоминаем путь для будущего использования
 if not MAIN_MENU_PHOTO_PATH:
-    # Создаем папку assets в директории скрипта
     if getattr(sys, 'frozen', False):
         base_dir = os.path.dirname(sys.executable)
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
     
-    assets_dir = os.path.join(base_dir, "assets")
-    if not os.path.exists(assets_dir):
-        os.makedirs(assets_dir)
-        print(f"📁 Создана папка assets в {base_dir}")
-    
-    MAIN_MENU_PHOTO_PATH = os.path.join(assets_dir, "photo1.jpg")
-    print(f"📌 Ожидается файл фото: {MAIN_MENU_PHOTO_PATH}")
+    MAIN_MENU_PHOTO_PATH = os.path.join(base_dir, "photo1.jpg")
+    print(f"📌 Фото не найдено. Поместите файл photo1.jpg в папку: {base_dir}")
 
 # Курс TON к USD (примерный) и RUB
 TON_TO_USD_RATE = 1.44
@@ -275,10 +259,6 @@ async def send_message_with_photo(chat_id, text, reply_markup=None):
     
     try:
         # Проверяем существование файла
-        if not os.path.exists(MAIN_MENU_PHOTO_PATH):
-            # Ищем фото заново
-            MAIN_MENU_PHOTO_PATH = find_photo_file("photo1.jpg")
-        
         if MAIN_MENU_PHOTO_PATH and os.path.exists(MAIN_MENU_PHOTO_PATH):
             with open(MAIN_MENU_PHOTO_PATH, 'rb') as photo:
                 return await bot.send_photo(
@@ -288,7 +268,7 @@ async def send_message_with_photo(chat_id, text, reply_markup=None):
                     reply_markup=reply_markup
                 )
         else:
-            logger.warning(f"Фото не найдено. Отправляю сообщение без фото.")
+            # Отправляем без фото
             return await bot.send_message(
                 chat_id=chat_id,
                 text=text,
@@ -296,6 +276,7 @@ async def send_message_with_photo(chat_id, text, reply_markup=None):
             )
     except Exception as e:
         logger.error(f"Ошибка отправки фото: {e}")
+        # При ошибке отправляем без фото
         return await bot.send_message(
             chat_id=chat_id,
             text=text,
@@ -1464,10 +1445,23 @@ async def select_mentor_handler(message: types.Message):
     
     await send_message_with_photo(user_id, mentors_text, get_mentors_keyboard())
 
-@dp.callback_query_handler(lambda call: call.data.startswith("select_mentor_"))
+@dp.callback_query_handler(lambda call: call.data and call.data.startswith("select_mentor_"))
 async def process_mentor_selection(call: types.CallbackQuery):
     user_id = call.from_user.id
-    mentor_id = int(call.data.split("_")[2])
+    
+    try:
+        # Разбираем callback_data
+        parts = call.data.split("_")
+        if len(parts) >= 3 and parts[2] != 'None':
+            mentor_id = int(parts[2])
+        else:
+            await call.answer("❌ Некорректный ID наставника")
+            logger.error(f"Некорректный callback_data: {call.data}")
+            return
+    except (ValueError, IndexError) as e:
+        await call.answer("❌ Ошибка при выборе наставника")
+        logger.error(f"Ошибка парсинга callback_data {call.data}: {e}")
+        return
     
     # Проверяем, не пытается ли пользователь выбрать себя
     if user_id == mentor_id:
@@ -2694,8 +2688,12 @@ async def on_startup(dp):
     except Exception as e:
         logger.error(f"Ошибка добавления наставника @DimaCrimons: {e}")
     
-    if not os.path.exists(MAIN_MENU_PHOTO_PATH):
-        logger.warning(f"⚠️ Файл {MAIN_MENU_PHOTO_PATH} не найден. Главное меню будет без фото.")
+    # Информация о фото
+    if MAIN_MENU_PHOTO_PATH and os.path.exists(MAIN_MENU_PHOTO_PATH):
+        logger.info(f"✅ Фото найдено: {MAIN_MENU_PHOTO_PATH}")
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        logger.warning(f"⚠️ Файл photo1.jpg не найден в директории {base_dir}. Главное меню будет без фото.")
 
 async def on_shutdown(dp):
     db.close()
