@@ -9,12 +9,14 @@ logger = logging.getLogger(__name__)
 class Database:
     def __init__(self, db_name='worker_bot.db'):
         self.conn = sqlite3.connect(db_name, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
         self.init_db()
+        self.activate_pending_mentors()  # Активируем наставников при запуске
     
     def init_db(self):
         """Инициализация базы данных"""
-        # Таблица пользователей - добавляем поля для наставников
+        # Таблица пользователей
         self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +53,7 @@ class Database:
         )
         ''')
         
-        # Таблица заявок на вывод - с новыми направлениями
+        # Таблица заявок на вывод
         self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +85,7 @@ class Database:
         )
         ''')
         
-        # Таблица статистики команды - убраны team_members_count
+        # Таблица статистики команды
         self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS team_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,117 +110,128 @@ class Database:
         )
         ''')
         
-        # Инициализация статистики команды
-        self.cursor.execute("SELECT COUNT(*) FROM team_stats")
-        if self.cursor.fetchone()[0] == 0:
-            today = datetime.now().date()
-            
-            # Общая сумма и количество профитов
-            self.cursor.execute('''SELECT SUM(amount), COUNT(*) FROM withdrawals WHERE status = 'paid' ''')
-            total_stats = self.cursor.fetchone()
-            total_amount = total_stats[0] or 0
-            total_profits = total_stats[1] or 0
-            
-            # Сегодняшние данные
-            self.cursor.execute('''SELECT SUM(amount), COUNT(*) FROM withdrawals WHERE status = 'paid' AND DATE(created_at) = ?''', (today,))
-            today_stats = self.cursor.fetchone()
-            today_amount = today_stats[0] or 0
-            today_profits = today_stats[1] or 0
-            
-            # Самое популярное направление
-            self.cursor.execute('''SELECT direction, COUNT(*) as count FROM withdrawals WHERE status = 'paid' GROUP BY direction ORDER BY count DESC LIMIT 1''')
-            direction_result = self.cursor.fetchone()
-            most_common_direction = direction_result[0] if direction_result else "Нет данных"
-            
-            # Активные воркеры
-            self.cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = 1 AND is_blocked = 0")
-            active_workers = self.cursor.fetchone()[0] or 0
-            
-            self.cursor.execute('''
-            INSERT INTO team_stats (total_amount, total_profits, today_amount, today_profits, 
-                                   most_common_direction, active_workers)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ''', (total_amount, total_profits, today_amount, today_profits, 
-                  most_common_direction, active_workers))
-        
         self.conn.commit()
-        logger.info("База данных инициализирована")
+        logger.info("✅ База данных инициализирована")
+    
+    def activate_pending_mentors(self):
+        """Активирует наставников при запуске бота"""
+        try:
+            # Находим всех наставников без user_id
+            self.cursor.execute('''
+            SELECT username, first_name, mentor_description FROM users 
+            WHERE is_mentor = 1 AND user_id IS NULL
+            ''')
+            pending = self.cursor.fetchall()
+            
+            for row in pending:
+                username = row[0]
+                first_name = row[1]
+                description = row[2]
+                
+                # Ищем пользователя с таким же username, у которого есть user_id
+                self.cursor.execute('''
+                SELECT user_id FROM users 
+                WHERE username = ? AND user_id IS NOT NULL
+                ''', (username,))
+                result = self.cursor.fetchone()
+                
+                if result:
+                    user_id = result[0]
+                    # Обновляем запись наставника
+                    self.cursor.execute('''
+                    UPDATE users 
+                    SET user_id = ?, is_mentor = 1, mentor_description = ?
+                    WHERE username = ? AND is_mentor = 1
+                    ''', (user_id, description, username))
+                    logger.info(f"✅ Наставник @{username} (ID: {user_id}) активирован")
+                else:
+                    logger.info(f"⏳ Наставник @{username} ожидает активации")
+            
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"❌ Ошибка активации наставников: {e}")
     
     # ========== МЕТОДЫ ДЛЯ РАБОТЫ С ПОЛЬЗОВАТЕЛЯМИ ==========
     
     def create_or_update_user(self, user_id, username, first_name, last_name):
-        """Создает или обновляет пользователя с правильным расчетом времени в тиме"""
+        """Создает или обновляет пользователя"""
         try:
-            # Проверяем, существует ли пользователь по user_id
-            self.cursor.execute('''SELECT created_at, is_mentor, mentor_description FROM users WHERE user_id = ?''', (user_id,))
+            # Проверяем, существует ли пользователь
+            self.cursor.execute('''SELECT created_at, is_mentor, mentor_description, username 
+                                 FROM users WHERE user_id = ?''', (user_id,))
             existing_user = self.cursor.fetchone()
             
             if existing_user:
-                # Пользователь существует - обновляем время активности
+                # Пользователь существует - обновляем
                 join_date = datetime.strptime(existing_user[0], '%Y-%m-%d %H:%M:%S')
                 current_date = datetime.now()
-                
-                # Рассчитываем дни в тиме
                 days_in_team = (current_date - join_date).days
                 if days_in_team < 1:
                     days_in_team = 1
                 
-                # Сохраняем статус наставника и описание
-                is_mentor = existing_user[1]
+                # Сохраняем статус наставника
+                is_mentor = existing_user[1] or False
                 mentor_description = existing_user[2]
                 
-                # Обновляем данные пользователя
                 self.cursor.execute('''
                 UPDATE users 
                 SET username = ?, first_name = ?, last_name = ?, 
                     last_active_at = CURRENT_TIMESTAMP, days_in_team = ?,
                     is_mentor = ?, mentor_description = ?
                 WHERE user_id = ?
-                ''', (username, first_name, last_name, days_in_team, is_mentor, mentor_description, user_id))
+                ''', (username, first_name, last_name, days_in_team, 
+                      is_mentor, mentor_description, user_id))
                 
-                logger.info(f"Обновлен пользователь {user_id}: {days_in_team} дней в тиме")
+                logger.info(f"🔄 Обновлен пользователь {user_id}")
             else:
-                # Проверяем, есть ли пользователь с таким username (возможно, предварительно создан как наставник)
-                self.cursor.execute('''SELECT user_id, is_mentor, mentor_description FROM users WHERE username = ?''', (username,))
+                # Проверяем, есть ли пользователь с таким username (возможно, предзаписанный наставник)
+                self.cursor.execute('''SELECT user_id, is_mentor, mentor_description 
+                                     FROM users WHERE username = ?''', (username,))
                 existing_by_username = self.cursor.fetchone()
                 
                 if existing_by_username:
-                    # Нашли пользователя по username - обновляем его user_id
-                    old_user_id = existing_by_username[0]
-                    is_mentor = existing_by_username[1]
+                    # Нашли наставника по username - активируем
+                    old_id = existing_by_username[0]
+                    is_mentor = existing_by_username[1] or False
                     mentor_description = existing_by_username[2]
                     
-                    # Обновляем запись, устанавливаем user_id
                     self.cursor.execute('''
                     UPDATE users 
                     SET user_id = ?, username = ?, first_name = ?, last_name = ?,
                         last_active_at = CURRENT_TIMESTAMP, days_in_team = 1,
                         is_mentor = ?, mentor_description = ?
                     WHERE username = ?
-                    ''', (user_id, username, first_name, last_name, is_mentor, mentor_description, username))
+                    ''', (user_id, username, first_name, last_name, 
+                          is_mentor, mentor_description, username))
                     
                     logger.info(f"✅ Активирован наставник {user_id} (@{username})")
                 else:
-                    # Новый пользователь - создаем запись с процентом 70%
+                    # Новый пользователь
                     self.cursor.execute('''
                     INSERT INTO users 
                     (user_id, username, first_name, last_name, worker_percent, days_in_team) 
                     VALUES (?, ?, ?, ?, 70, 1)
                     ''', (user_id, username, first_name, last_name))
                     
-                    logger.info(f"Создан новый пользователь {user_id}")
+                    logger.info(f"👤 Создан новый пользователь {user_id}")
             
             self.conn.commit()
+            
+            # После создания/обновления пробуем активировать наставников
+            self.activate_pending_mentors()
+            
             return True
         except Exception as e:
-            logger.error(f"Ошибка создания/обновления пользователя: {e}")
+            logger.error(f"❌ Ошибка создания/обновления пользователя: {e}")
             return False
     
     def get_user(self, user_id):
+        """Получает пользователя по ID"""
         self.cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         return self.cursor.fetchone()
     
     def get_user_stats(self, user_id):
+        """Получает статистику пользователя"""
         self.cursor.execute('''
         SELECT username, first_name, last_name,
                total_earned, team_count, worker_percent, is_active,
@@ -314,7 +327,7 @@ class Database:
             self.conn.commit()
             return True
         except Exception as e:
-            logger.error(f"Ошибка добавления кошелька: {e}")
+            logger.error(f"❌ Ошибка добавления кошелька: {e}")
             return False
     
     def get_user_wallets(self, user_id):
@@ -354,12 +367,13 @@ class Database:
             self.conn.commit()
             return True
         except Exception as e:
-            logger.error(f"Ошибка активации кошелька: {e}")
+            logger.error(f"❌ Ошибка активации кошелька: {e}")
             return False
     
     # ========== МЕТОДЫ ДЛЯ РАБОТЫ С ПРОФИЛЕМ ==========
     
     def update_total_earned(self, user_id, amount):
+        """Обновляет общую сумму заработка пользователя"""
         self.cursor.execute('''
         UPDATE users 
         SET total_earned = total_earned + ?,
@@ -367,10 +381,10 @@ class Database:
         WHERE user_id = ?
         ''', (amount, user_id))
         self.conn.commit()
-        
         self.update_team_stats(amount)
     
     def update_worker_percent(self, user_id, percent):
+        """Обновляет процент воркера"""
         self.cursor.execute('''
         UPDATE users 
         SET worker_percent = ?
@@ -379,6 +393,7 @@ class Database:
         self.conn.commit()
     
     def toggle_hide_from_top(self, user_id):
+        """Переключает скрытие из топа"""
         self.cursor.execute('''
         UPDATE users 
         SET hide_from_top = NOT hide_from_top
@@ -392,6 +407,7 @@ class Database:
         return self.cursor.fetchone()[0]
     
     def get_top_workers(self, limit=10, exclude_hidden=True):
+        """Получает топ воркеров"""
         if exclude_hidden:
             self.cursor.execute('''
             SELECT user_id, username, first_name, total_earned, profits_count
@@ -411,6 +427,7 @@ class Database:
         return self.cursor.fetchall()
     
     def get_user_rank(self, user_id):
+        """Получает место пользователя в топе"""
         self.cursor.execute('''
         SELECT COUNT(*) + 1 as rank
         FROM users u1
@@ -424,6 +441,7 @@ class Database:
         return result[0] if result else 1
     
     def get_all_users(self):
+        """Получает всех пользователей"""
         self.cursor.execute('''
         SELECT user_id, username, first_name, total_earned, worker_percent, is_active, is_blocked
         FROM users ORDER BY created_at DESC
@@ -431,6 +449,7 @@ class Database:
         return self.cursor.fetchall()
     
     def get_all_active_users(self):
+        """Получает всех активных пользователей"""
         self.cursor.execute('''
         SELECT user_id, username, first_name 
         FROM users 
@@ -439,6 +458,7 @@ class Database:
         return self.cursor.fetchall()
     
     def find_user_by_username(self, username):
+        """Ищет пользователя по username"""
         self.cursor.execute('''
         SELECT user_id, username, first_name, worker_percent, total_earned
         FROM users WHERE username LIKE ? AND is_blocked = 0
@@ -448,6 +468,7 @@ class Database:
     # ========== МЕТОДЫ ДЛЯ БЛОКИРОВКИ ==========
     
     def block_user(self, user_id):
+        """Блокирует пользователя"""
         try:
             self.cursor.execute('''
             UPDATE users 
@@ -457,10 +478,11 @@ class Database:
             self.conn.commit()
             return True
         except Exception as e:
-            logger.error(f"Ошибка блокировки пользователя: {e}")
+            logger.error(f"❌ Ошибка блокировки пользователя: {e}")
             return False
     
     def unblock_user(self, user_id):
+        """Разблокирует пользователя"""
         try:
             self.cursor.execute('''
             UPDATE users 
@@ -470,10 +492,11 @@ class Database:
             self.conn.commit()
             return True
         except Exception as e:
-            logger.error(f"Ошибка разблокировки пользователя: {e}")
+            logger.error(f"❌ Ошибка разблокировки пользователя: {e}")
             return False
     
     def is_user_blocked(self, user_id):
+        """Проверяет, заблокирован ли пользователь"""
         self.cursor.execute('''
         SELECT is_blocked FROM users WHERE user_id = ?
         ''', (user_id,))
@@ -481,6 +504,7 @@ class Database:
         return result[0] if result else False
     
     def get_blocked_users(self):
+        """Получает список заблокированных пользователей"""
         self.cursor.execute('''
         SELECT user_id, username, first_name 
         FROM users 
@@ -504,7 +528,7 @@ class Database:
         return result[0] if result else None
     
     def get_global_most_common_direction(self):
-        """Получает самое популярное направление среди всех пользователей"""
+        """Получает самое популярное направление среди всех"""
         self.cursor.execute('''
         SELECT direction, COUNT(*) as count 
         FROM withdrawals 
@@ -519,9 +543,9 @@ class Database:
     # ========== МЕТОДЫ ДЛЯ СТАТИСТИКИ КОМАНДЫ ==========
     
     def update_team_stats(self, amount):
+        """Обновляет статистику команды"""
         today = datetime.now().date()
         
-        # Обновляем общую статистику
         self.cursor.execute('''
         UPDATE team_stats 
         SET total_amount = total_amount + ?,
@@ -602,6 +626,7 @@ class Database:
                 SET is_mentor = 1, mentor_description = ?
                 WHERE user_id = ?
                 ''', (description, user_id))
+                logger.info(f"✅ Пользователь {user_id} назначен наставником")
             else:
                 # Проверяем, есть ли пользователь с таким username
                 self.cursor.execute('''SELECT user_id FROM users WHERE username = ?''', (username,))
@@ -613,16 +638,18 @@ class Database:
                     SET user_id = ?, is_mentor = 1, mentor_description = ?, first_name = ?
                     WHERE username = ?
                     ''', (user_id, description, first_name, username))
+                    logger.info(f"✅ Наставник @{username} активирован с ID {user_id}")
                 else:
                     self.cursor.execute('''
                     INSERT INTO users (user_id, username, first_name, is_mentor, mentor_description, worker_percent, days_in_team)
                     VALUES (?, ?, ?, 1, ?, 70, 1)
                     ''', (user_id, username, first_name, description))
+                    logger.info(f"✅ Добавлен новый наставник {user_id} (@{username})")
             
             self.conn.commit()
             return True
         except Exception as e:
-            logger.error(f"Ошибка добавления наставника: {e}")
+            logger.error(f"❌ Ошибка добавления наставника: {e}")
             return False
     
     def remove_mentor(self, user_id):
@@ -636,15 +663,25 @@ class Database:
             self.conn.commit()
             return self.cursor.rowcount > 0
         except Exception as e:
-            logger.error(f"Ошибка удаления наставника: {e}")
+            logger.error(f"❌ Ошибка удаления наставника: {e}")
             return False
     
     def get_all_mentors_with_info(self):
-        """Получает всех наставников с информацией"""
+        """Получает всех активных наставников (только с user_id)"""
         self.cursor.execute('''
         SELECT user_id, username, first_name, mentor_description
         FROM users 
-        WHERE is_mentor = 1 AND is_blocked = 0
+        WHERE is_mentor = 1 AND is_blocked = 0 AND user_id IS NOT NULL
+        ORDER BY first_name
+        ''')
+        return self.cursor.fetchall()
+    
+    def get_pending_mentors(self):
+        """Получает наставников, ожидающих активации"""
+        self.cursor.execute('''
+        SELECT username, first_name, mentor_description
+        FROM users 
+        WHERE is_mentor = 1 AND user_id IS NULL
         ORDER BY first_name
         ''')
         return self.cursor.fetchall()
@@ -659,9 +696,9 @@ class Database:
         return self.cursor.fetchone()
     
     def get_mentors_count(self):
-        """Получает количество наставников"""
+        """Получает количество активных наставников"""
         self.cursor.execute('''
-        SELECT COUNT(*) FROM users WHERE is_mentor = 1
+        SELECT COUNT(*) FROM users WHERE is_mentor = 1 AND user_id IS NOT NULL
         ''')
         return self.cursor.fetchone()[0]
     
@@ -684,7 +721,7 @@ class Database:
             self.conn.commit()
             return True
         except Exception as e:
-            logger.error(f"Ошибка установки наставника: {e}")
+            logger.error(f"❌ Ошибка установки наставника: {e}")
             return False
     
     def remove_user_mentor(self, user_id):
@@ -698,7 +735,7 @@ class Database:
             self.conn.commit()
             return True
         except Exception as e:
-            logger.error(f"Ошибка удаления наставника: {e}")
+            logger.error(f"❌ Ошибка удаления наставника: {e}")
             return False
     
     def get_mentor_students(self, mentor_id):
@@ -719,7 +756,7 @@ class Database:
         return self.cursor.fetchone()[0]
     
     def get_mentor_students_total_profit(self, mentor_id):
-        """Получает общую сумму профитов учеников наставника"""
+        """Получает общую сумму профитов учеников"""
         self.cursor.execute('''
         SELECT SUM(total_earned) FROM users WHERE mentor_id = ?
         ''', (mentor_id,))
@@ -747,7 +784,7 @@ class Database:
     # ========== МЕТОДЫ ДЛЯ РАБОТЫ С ЗАЯВКАМИ ==========
     
     def create_withdrawal_with_url(self, user_id, amount, wallet_address, wallet_type, direction, gift_url, worker_percent):
-        """Создает заявку на вывод со ссылкой на гифты"""
+        """Создает заявку на вывод"""
         worker_amount = (amount * worker_percent) / 100
         admin_amount = (amount * (100 - worker_percent)) / 100
         
@@ -758,7 +795,6 @@ class Database:
         ''', (user_id, amount, wallet_address, wallet_type, direction, gift_url, worker_percent, admin_amount, worker_amount))
         
         withdrawal_id = self.cursor.lastrowid
-        
         self.conn.commit()
         return withdrawal_id
     
@@ -772,10 +808,12 @@ class Database:
         self.conn.commit()
     
     def get_withdrawal(self, withdrawal_id):
+        """Получает заявку по ID"""
         self.cursor.execute("SELECT * FROM withdrawals WHERE id = ?", (withdrawal_id,))
         return self.cursor.fetchone()
     
     def get_user_withdrawals(self, user_id):
+        """Получает все заявки пользователя"""
         self.cursor.execute('''
         SELECT id, amount, direction, wallet_type, status, gift_url, worker_percent, worker_amount, admin_amount, created_at 
         FROM withdrawals 
@@ -785,6 +823,7 @@ class Database:
         return self.cursor.fetchall()
     
     def update_withdrawal_status(self, withdrawal_id, status, admin_comment=None):
+        """Обновляет статус заявки"""
         if admin_comment:
             self.cursor.execute('''
             UPDATE withdrawals 
@@ -801,6 +840,7 @@ class Database:
         self.conn.commit()
     
     def get_pending_withdrawals(self):
+        """Получает все ожидающие заявки"""
         self.cursor.execute('''
         SELECT w.*, u.username, u.first_name, u.worker_percent
         FROM withdrawals w
@@ -811,6 +851,7 @@ class Database:
         return self.cursor.fetchall()
     
     def add_proof_image(self, withdrawal_id, file_id, file_type):
+        """Добавляет пруф к заявке"""
         self.cursor.execute('''
         INSERT INTO proof_images (withdrawal_id, file_id, file_type)
         VALUES (?, ?, ?)
@@ -818,6 +859,7 @@ class Database:
         self.conn.commit()
     
     def get_proof_images(self, withdrawal_id):
+        """Получает все пруфы заявки"""
         self.cursor.execute('''
         SELECT file_id, file_type FROM proof_images 
         WHERE withdrawal_id = ?
@@ -836,7 +878,7 @@ class Database:
         return result[0] > 0 if result else False
     
     def add_admin(self, user_id, username, first_name):
-        """Добавляет админа в базу данных"""
+        """Добавляет админа"""
         try:
             self.cursor.execute('''
             INSERT OR IGNORE INTO admins (user_id, username, first_name)
@@ -845,14 +887,14 @@ class Database:
             self.conn.commit()
             return True
         except Exception as e:
-            logger.error(f"Ошибка добавления админа: {e}")
+            logger.error(f"❌ Ошибка добавления админа: {e}")
             return False
     
     def remove_admin(self, user_id):
-        """Удаляет админа из базы данных"""
+        """Удаляет админа"""
         try:
             # Не даем удалить главного админа
-            if user_id == 1034932955:  # ADMIN_ID
+            if user_id == 1034932955:
                 return False
                 
             self.cursor.execute('''
@@ -861,11 +903,11 @@ class Database:
             self.conn.commit()
             return self.cursor.rowcount > 0
         except Exception as e:
-            logger.error(f"Ошибка удаления админа: {e}")
+            logger.error(f"❌ Ошибка удаления админа: {e}")
             return False
     
     def get_all_admins(self):
-        """Получает список всех админов (только ID)"""
+        """Получает список всех админов"""
         self.cursor.execute('''
         SELECT user_id FROM admins
         ''')
@@ -887,7 +929,9 @@ class Database:
         return self.cursor.fetchone()
     
     def close(self):
+        """Закрывает соединение с БД"""
         self.conn.close()
+        logger.info("🔒 Соединение с БД закрыто")
 
 # Экспортируем класс Database
 __all__ = ['Database']
