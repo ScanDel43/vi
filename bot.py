@@ -1423,19 +1423,27 @@ async def select_mentor_handler(message: types.Message):
     # Получаем список наставников
     mentors = db.get_all_mentors_with_info()
     
-    if not mentors:
+    # Фильтруем только тех, у кого есть user_id
+    valid_mentors = []
+    for mentor in mentors:
+        mentor_id, username, first_name, description = mentor
+        if mentor_id is not None:  # Только активированные наставники
+            valid_mentors.append(mentor)
+    
+    if not valid_mentors:
         await send_message_with_photo(
             user_id,
-            "<b>❌ В данный момент нет доступных наставников</b>"
+            "<b>❌ В данный момент нет доступных наставников</b>\n\n"
+            "<i>Наставники появятся после активации бота</i>"
         )
         return
     
     mentors_text = "<b>👨‍🏫 ВЫБОР НАСТАВНИКА</b>\n\n"
     mentors_text += "<i>Выберите наставника из списка ниже:</i>\n\n"
     
-    for mentor in mentors:
-        user_id_mentor, username, first_name, description = mentor
-        name = first_name or f"Наставник {user_id_mentor}"
+    for mentor in valid_mentors:
+        mentor_id, username, first_name, description = mentor
+        name = first_name or f"Наставник {mentor_id}"
         username_display = f"(@{username})" if username else ""
         
         mentors_text += f"<b>👨‍🏫 {name}</b> {username_display}\n"
@@ -1443,7 +1451,31 @@ async def select_mentor_handler(message: types.Message):
             mentors_text += f"{description}\n"
         mentors_text += "▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
     
-    await send_message_with_photo(user_id, mentors_text, get_mentors_keyboard())
+    await send_message_with_photo(user_id, mentors_text, get_mentors_keyboard(valid_mentors))
+
+def get_mentors_keyboard(mentors=None):
+    """Клавиатура со списком наставников"""
+    if mentors is None:
+        mentors = db.get_all_mentors_with_info()
+        # Фильтруем только активированных
+        mentors = [m for m in mentors if m[0] is not None]
+    
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    
+    if not mentors:
+        markup.add(types.InlineKeyboardButton("❌ Нет доступных наставников", callback_data="no_mentors"))
+    else:
+        for mentor in mentors:
+            mentor_id, username, first_name, description = mentor
+            if mentor_id is not None:  # Только с ID
+                name = first_name or f"Наставник {mentor_id}"
+                btn_text = f"👨‍🏫 {name}"
+                if username:
+                    btn_text += f" (@{username})"
+                markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"select_mentor_{mentor_id}"))
+    
+    markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel_mentor_selection"))
+    return markup
 
 @dp.callback_query_handler(lambda call: call.data and call.data.startswith("select_mentor_"))
 async def process_mentor_selection(call: types.CallbackQuery):
@@ -1452,11 +1484,16 @@ async def process_mentor_selection(call: types.CallbackQuery):
     try:
         # Разбираем callback_data
         parts = call.data.split("_")
-        if len(parts) >= 3 and parts[2] != 'None':
-            mentor_id = int(parts[2])
+        if len(parts) >= 3:
+            mentor_id_str = parts[2]
+            if mentor_id_str and mentor_id_str != 'None':
+                mentor_id = int(mentor_id_str)
+            else:
+                await call.answer("❌ Наставник еще не активировал бота")
+                logger.error(f"Некорректный ID наставника: {mentor_id_str}")
+                return
         else:
-            await call.answer("❌ Некорректный ID наставника")
-            logger.error(f"Некорректный callback_data: {call.data}")
+            await call.answer("❌ Ошибка при выборе наставника")
             return
     except (ValueError, IndexError) as e:
         await call.answer("❌ Ошибка при выборе наставника")
@@ -1477,7 +1514,13 @@ async def process_mentor_selection(call: types.CallbackQuery):
     # Получаем информацию о наставнике
     mentor_data = db.get_user_stats(mentor_id)
     if not mentor_data:
-        await call.answer("❌ Наставник не найден")
+        await call.answer("❌ Наставник не найден в базе данных")
+        logger.error(f"Наставник {mentor_id} не найден в БД")
+        return
+    
+    # Проверяем, является ли пользователь наставником
+    if not db.is_mentor(mentor_id):
+        await call.answer("❌ Этот пользователь не является наставником")
         return
     
     mentor_name = mentor_data[1] or f"ID: {mentor_id}"
@@ -2704,3 +2747,4 @@ if __name__ == '__main__':
         executor.start_polling(dp, on_startup=on_startup, on_shutdown=on_shutdown, skip_updates=True)
     except Exception as e:
         logger.error(f"❌ Ошибка при работе бота: {e}")
+
