@@ -1,6 +1,7 @@
 import logging
 import re
 import os
+import sys
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -37,14 +38,57 @@ DEFAULT_WORKER_PERCENT_WITH_MENTOR = 60  # Процент с наставник�
 
 PRICE_NFT_BOT = "@PriceNFTbot"
 
-# Путь к фото для главного меню
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MAIN_MENU_PHOTO_PATH = os.path.join(BASE_DIR, "assets", "photo1.jpg")
+# ==================== ПОИСК ФОТО ВО ВСЕХ ДИРЕКТОРИЯХ ====================
+def find_photo_file(filename="photo1.jpg"):
+    """Ищет файл фото во всех возможных директориях"""
+    # Получаем директорию, где находится main скрипт
+    if getattr(sys, 'frozen', False):
+        # Если собран в exe
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        # Если запущен как .py
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Список возможных путей
+    possible_paths = [
+        os.path.join(base_dir, filename),
+        os.path.join(base_dir, "assets", filename),
+        os.path.join(base_dir, "images", filename),
+        os.path.join(base_dir, "img", filename),
+        os.path.join(base_dir, "photos", filename),
+        os.path.join(base_dir, "media", filename),
+        os.path.join(os.path.dirname(base_dir), "assets", filename),
+        os.path.join(os.path.dirname(base_dir), filename),
+        os.path.join(os.getcwd(), filename),
+        os.path.join(os.getcwd(), "assets", filename),
+        filename,  # Текущая директория
+    ]
+    
+    # Проверяем каждый путь
+    for path in possible_paths:
+        if os.path.exists(path):
+            return path
+    
+    return None
 
-# Создайте папку assets если её нет
-if not os.path.exists(os.path.join(BASE_DIR, "assets")):
-    os.makedirs(os.path.join(BASE_DIR, "assets"))
-    print(f"📁 Создана папка assets в {BASE_DIR}")
+# Ищем фото
+MAIN_MENU_PHOTO_PATH = find_photo_file("photo1.jpg")
+
+# Если не нашли, создаем заглушку
+if not MAIN_MENU_PHOTO_PATH:
+    # Создаем папку assets в директории скрипта
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    assets_dir = os.path.join(base_dir, "assets")
+    if not os.path.exists(assets_dir):
+        os.makedirs(assets_dir)
+        print(f"📁 Создана папка assets в {base_dir}")
+    
+    MAIN_MENU_PHOTO_PATH = os.path.join(assets_dir, "photo1.jpg")
+    print(f"📌 Ожидается файл фото: {MAIN_MENU_PHOTO_PATH}")
 
 # Курс TON к USD (примерный) и RUB
 TON_TO_USD_RATE = 1.44
@@ -227,8 +271,15 @@ def format_name_for_top(name):
 
 async def send_message_with_photo(chat_id, text, reply_markup=None):
     """Универсальная функция отправки сообщения с фото"""
+    global MAIN_MENU_PHOTO_PATH
+    
     try:
-        if os.path.exists(MAIN_MENU_PHOTO_PATH):
+        # Проверяем существование файла
+        if not os.path.exists(MAIN_MENU_PHOTO_PATH):
+            # Ищем фото заново
+            MAIN_MENU_PHOTO_PATH = find_photo_file("photo1.jpg")
+        
+        if MAIN_MENU_PHOTO_PATH and os.path.exists(MAIN_MENU_PHOTO_PATH):
             with open(MAIN_MENU_PHOTO_PATH, 'rb') as photo:
                 return await bot.send_photo(
                     chat_id=chat_id,
@@ -237,7 +288,7 @@ async def send_message_with_photo(chat_id, text, reply_markup=None):
                     reply_markup=reply_markup
                 )
         else:
-            logger.warning(f"Фото не найдено: {MAIN_MENU_PHOTO_PATH}. Отправляю сообщение без фото.")
+            logger.warning(f"Фото не найдено. Отправляю сообщение без фото.")
             return await bot.send_message(
                 chat_id=chat_id,
                 text=text,
@@ -316,7 +367,7 @@ def get_info_keyboard():
     )
     markup.add(
         types.InlineKeyboardButton("🤖 Бот для трафферов", callback_data="traffer_bot"),
-        types.InlineKeyboardButton("📰 Новости", url=TEAM_CHANNEL_URL)  # Изменено: ссылка на канал
+        types.InlineKeyboardButton("📰 Новости", url=TEAM_CHANNEL_URL)
     )
     markup.add(
         types.InlineKeyboardButton("📊 Статистика проекта", callback_data="project_stats"),
@@ -351,8 +402,8 @@ def get_direction_keyboard():
         types.InlineKeyboardButton("🎯 Dr@iner", callback_data="direction_drainer"),
         types.InlineKeyboardButton("💎 OTC Bot", callback_data="direction_otc"),
         types.InlineKeyboardButton("🌈 Nicegram", callback_data="direction_nicegram"),
-        types.InlineKeyboardButton("🎰 К@зино", callback_data="direction_casino"),  # Новое направление
-        types.InlineKeyboardButton("📁 Стiллер", callback_data="direction_stiller")  # Новое направление
+        types.InlineKeyboardButton("🎰 К@зино", callback_data="direction_casino"),
+        types.InlineKeyboardButton("📁 Стiллер", callback_data="direction_stiller")
     )
     markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel_request"))
     return markup
@@ -447,7 +498,7 @@ def get_admin_menu_keyboard():
     )
     markup.add(
         types.KeyboardButton("👑 Управление админами"),
-        types.KeyboardButton("👨‍🏫 Управление наставниками")  # Новое
+        types.KeyboardButton("👨‍🏫 Управление наставниками")
     )
     markup.add(
         types.KeyboardButton("📨 Личное сообщение"),
@@ -892,8 +943,8 @@ async def process_direction(call: types.CallbackQuery, state: FSMContext):
         'direction_drainer': 'Dr@iner',
         'direction_otc': 'OTC Bot',
         'direction_nicegram': 'Nicegram',
-        'direction_casino': 'К@зино',  # Новое направление
-        'direction_stiller': 'Стiллер'  # Новое направление
+        'direction_casino': 'К@зино',
+        'direction_stiller': 'Стiллер'
     }
     
     direction = direction_types.get(call.data)
@@ -912,7 +963,7 @@ async def process_direction(call: types.CallbackQuery, state: FSMContext):
     await state.update_data({'selected_direction': direction})
     
     user_data = db.get_user_stats(user_id)
-    worker_percent = user_data[5]  # Процент воркера
+    worker_percent = user_data[5]
     
     # Проверяем, выбрано ли направление К@зино
     if direction == 'К@зино':
@@ -2061,14 +2112,14 @@ async def list_mentors(message: types.Message):
     
     for mentor in mentors:
         user_id, username, first_name, description = mentor
-        students_count = db.get_mentor_students_count(user_id)
+        students_count = db.get_mentor_students_count(user_id) if user_id else 0
         
         username_display = f"@{username}" if username else "нет юзернейма"
-        name = first_name or f"ID: {user_id}"
+        name = first_name or f"ID: {user_id}" if user_id else username
         
         response += (
             f"<b>👨‍🏫 {name}</b>\n"
-            f"• <b>ID:</b> <code>{user_id}</code>\n"
+            f"• <b>ID:</b> <code>{user_id or 'не активирован'}</code>\n"
             f"• <b>Юзернейм:</b> {username_display}\n"
             f"• <b>Учеников:</b> {students_count}\n"
             f"• <b>Описание:</b> {description or 'не указано'}\n"
@@ -2087,7 +2138,7 @@ async def edit_mentor_description_start(message: types.Message):
         "<i>Введите ID или @username наставника:</i>",
         reply_markup=get_cancel_keyboard()
     )
-    await AdminStates.waiting_for_user_id_for_percent.set()  # Переиспользуем состояние
+    await AdminStates.waiting_for_user_id_for_percent.set()
     await dp.current_state().update_data({'action': 'edit_mentor_description'})
 
 # ==================== ОБРАБОТЧИКИ ДЛЯ ЗАЯВОК ====================
@@ -2539,9 +2590,9 @@ async def chat_nastav_command(message: types.Message):
     
     for mentor in mentors:
         user_id, username, first_name, description = mentor
-        students_count = db.get_mentor_students_count(user_id)
+        students_count = db.get_mentor_students_count(user_id) if user_id else 0
         
-        name = first_name or f"Наставник {user_id}"
+        name = first_name or f"Наставник {user_id}" if user_id else username
         username_display = f"@{username}" if username else "нет юзернейма"
         
         response += f"<b>👨‍🏫 {name}</b> ({username_display})\n"
@@ -2580,29 +2631,68 @@ async def on_startup(dp):
             logger.info(f"✅ Главный админ добавлен в базу: {username}")
         else:
             logger.info("✅ Главный админ уже в базе")
-        
-        # Добавляем @gunfightep как наставника
-        try:
-            mentor1 = await bot.get_chat("@gunfightep")
-            if not db.is_mentor(mentor1.id):
-                description = "1️⃣ В ворке 1 год 4 месяца\n2️⃣ Общая сумма профитов: около 700к\n3️⃣ Направления: от NFT до эскорта\n4️⃣ Вшарен почти за все"
-                db.add_mentor(mentor1.id, mentor1.username, mentor1.first_name, description)
-                logger.info(f"✅ Наставник @gunfightep добавлен")
-        except Exception as e:
-            logger.error(f"Ошибка добавления наставника @gunfightep: {e}")
-        
-        # Добавляем @DimaCrimons как наставника
-        try:
-            mentor2 = await bot.get_chat("@DimaCrimons")
-            if not db.is_mentor(mentor2.id):
-                description = "1️⃣ В ворке 1 месяц\n2️⃣ Сумма профитов: 15\n3️⃣ Направления: OTC, Nicegram, Стиллер, Гарант\n4️⃣ Могу помочь советами, обеспечу физ номером за небольшую плату"
-                db.add_mentor(mentor2.id, mentor2.username, mentor2.first_name, description)
-                logger.info(f"✅ Наставник @DimaCrimons добавлен")
-        except Exception as e:
-            logger.error(f"Ошибка добавления наставника @DimaCrimons: {e}")
-            
     except Exception as e:
         logger.error(f"❌ Ошибка при добавлении главного админа: {e}")
+    
+    # Добавляем @gunfightep как наставника (даже если не запускал бота)
+    try:
+        mentor_username = "gunfightep"
+        mentor_first_name = "Gunfighter"
+        description = "1️⃣ В ворке 1 год 4 месяца\n2️⃣ Общая сумма профитов: около 700к\n3️⃣ Направления: от NFT до эскорта\n4️⃣ Вшарен почти за все"
+        
+        # Проверяем, существует ли пользователь в БД
+        db.cursor.execute("SELECT user_id FROM users WHERE username = ?", (mentor_username,))
+        existing = db.cursor.fetchone()
+        
+        if existing:
+            # Пользователь существует - обновляем статус наставника
+            db.cursor.execute('''
+            UPDATE users 
+            SET is_mentor = 1, mentor_description = ?
+            WHERE username = ?
+            ''', (description, mentor_username))
+            logger.info(f"✅ Наставник @{mentor_username} обновлен в БД")
+        else:
+            # Пользователя нет - создаем запись без user_id (будет обновлено при запуске)
+            db.cursor.execute('''
+            INSERT INTO users (username, first_name, is_mentor, mentor_description, worker_percent, days_in_team)
+            VALUES (?, ?, 1, ?, 70, 1)
+            ''', (mentor_username, mentor_first_name, description))
+            logger.info(f"✅ Наставник @{mentor_username} добавлен в БД (ожидает активации)")
+        
+        db.conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка добавления наставника @gunfightep: {e}")
+    
+    # Добавляем @DimaCrimons как наставника (даже если не запускал бота)
+    try:
+        mentor_username = "DimaCrimons"
+        mentor_first_name = "Dima Crimons"
+        description = "1️⃣ В ворке 1 месяц\n2️⃣ Сумма профитов: 15\n3️⃣ Направления: OTC, Nicegram, Стиллер, Гарант\n4️⃣ Могу помочь советами, обеспечу физ номером за небольшую плату"
+        
+        # Проверяем, существует ли пользователь в БД
+        db.cursor.execute("SELECT user_id FROM users WHERE username = ?", (mentor_username,))
+        existing = db.cursor.fetchone()
+        
+        if existing:
+            # Пользователь существует - обновляем статус наставника
+            db.cursor.execute('''
+            UPDATE users 
+            SET is_mentor = 1, mentor_description = ?
+            WHERE username = ?
+            ''', (description, mentor_username))
+            logger.info(f"✅ Наставник @{mentor_username} обновлен в БД")
+        else:
+            # Пользователя нет - создаем запись без user_id (будет обновлено при запуске)
+            db.cursor.execute('''
+            INSERT INTO users (username, first_name, is_mentor, mentor_description, worker_percent, days_in_team)
+            VALUES (?, ?, 1, ?, 70, 1)
+            ''', (mentor_username, mentor_first_name, description))
+            logger.info(f"✅ Наставник @{mentor_username} добавлен в БД (ожидает активации)")
+        
+        db.conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка добавления наставника @DimaCrimons: {e}")
     
     if not os.path.exists(MAIN_MENU_PHOTO_PATH):
         logger.warning(f"⚠️ Файл {MAIN_MENU_PHOTO_PATH} не найден. Главное меню будет без фото.")
