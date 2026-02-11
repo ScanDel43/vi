@@ -2671,63 +2671,34 @@ async def on_startup(dp):
     except Exception as e:
         logger.error(f"❌ Ошибка при добавлении главного админа: {e}")
     
-    # Добавляем @gunfightep как наставника (даже если не запускал бота)
+    # Добавляем @gunfightep как наставника
     try:
         mentor_username = "gunfightep"
         mentor_first_name = "Gunfighter"
         description = "1️⃣ В ворке 1 год 4 месяца\n2️⃣ Общая сумма профитов: около 700к\n3️⃣ Направления: от NFT до эскорта\n4️⃣ Вшарен почти за все"
         
-        # Проверяем, существует ли пользователь в БД
-        db.cursor.execute("SELECT user_id FROM users WHERE username = ?", (mentor_username,))
-        existing = db.cursor.fetchone()
-        
-        if existing:
-            # Пользователь существует - обновляем статус наставника
-            db.cursor.execute('''
-            UPDATE users 
-            SET is_mentor = 1, mentor_description = ?
-            WHERE username = ?
-            ''', (description, mentor_username))
-            logger.info(f"✅ Наставник @{mentor_username} обновлен в БД")
-        else:
-            # Пользователя нет - создаем запись без user_id (будет обновлено при запуске)
-            db.cursor.execute('''
-            INSERT INTO users (username, first_name, is_mentor, mentor_description, worker_percent, days_in_team)
-            VALUES (?, ?, 1, ?, 70, 1)
-            ''', (mentor_username, mentor_first_name, description))
-            logger.info(f"✅ Наставник @{mentor_username} добавлен в БД (ожидает активации)")
-        
+        # Создаем запись с user_id = NULL (будет активирован при запуске бота наставником)
+        db.cursor.execute('''
+        INSERT OR IGNORE INTO users (username, first_name, is_mentor, mentor_description, worker_percent, days_in_team)
+        VALUES (?, ?, 1, ?, 70, 1)
+        ''', (mentor_username, mentor_first_name, description))
         db.conn.commit()
+        logger.info(f"✅ Наставник @{mentor_username} добавлен в БД (ожидает активации)")
     except Exception as e:
         logger.error(f"Ошибка добавления наставника @gunfightep: {e}")
     
-    # Добавляем @DimaCrimons как наставника (даже если не запускал бота)
+    # Добавляем @DimaCrimons как наставника
     try:
         mentor_username = "DimaCrimons"
         mentor_first_name = "Dima Crimons"
         description = "1️⃣ В ворке 1 месяц\n2️⃣ Сумма профитов: 15\n3️⃣ Направления: OTC, Nicegram, Стиллер, Гарант\n4️⃣ Могу помочь советами, обеспечу физ номером за небольшую плату"
         
-        # Проверяем, существует ли пользователь в БД
-        db.cursor.execute("SELECT user_id FROM users WHERE username = ?", (mentor_username,))
-        existing = db.cursor.fetchone()
-        
-        if existing:
-            # Пользователь существует - обновляем статус наставника
-            db.cursor.execute('''
-            UPDATE users 
-            SET is_mentor = 1, mentor_description = ?
-            WHERE username = ?
-            ''', (description, mentor_username))
-            logger.info(f"✅ Наставник @{mentor_username} обновлен в БД")
-        else:
-            # Пользователя нет - создаем запись без user_id (будет обновлено при запуске)
-            db.cursor.execute('''
-            INSERT INTO users (username, first_name, is_mentor, mentor_description, worker_percent, days_in_team)
-            VALUES (?, ?, 1, ?, 70, 1)
-            ''', (mentor_username, mentor_first_name, description))
-            logger.info(f"✅ Наставник @{mentor_username} добавлен в БД (ожидает активации)")
-        
+        db.cursor.execute('''
+        INSERT OR IGNORE INTO users (username, first_name, is_mentor, mentor_description, worker_percent, days_in_team)
+        VALUES (?, ?, 1, ?, 70, 1)
+        ''', (mentor_username, mentor_first_name, description))
         db.conn.commit()
+        logger.info(f"✅ Наставник @{mentor_username} добавлен в БД (ожидает активации)")
     except Exception as e:
         logger.error(f"Ошибка добавления наставника @DimaCrimons: {e}")
     
@@ -2736,7 +2707,8 @@ async def on_startup(dp):
         logger.info(f"✅ Фото найдено: {MAIN_MENU_PHOTO_PATH}")
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        logger.warning(f"⚠️ Файл photo1.jpg не найден в директории {base_dir}. Главное меню будет без фото.")
+        logger.warning(f"⚠️ Файл photo1.jpg не найден в директории {base_dir}")
+        logger.warning(f"⚠️ Поместите файл photo1.jpg в папку: {base_dir}")
 
 async def on_shutdown(dp):
     db.close()
@@ -2747,4 +2719,5 @@ if __name__ == '__main__':
         executor.start_polling(dp, on_startup=on_startup, on_shutdown=on_shutdown, skip_updates=True)
     except Exception as e:
         logger.error(f"❌ Ошибка при работе бота: {e}")
+
 
