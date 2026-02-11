@@ -149,7 +149,7 @@ class Database:
     def create_or_update_user(self, user_id, username, first_name, last_name):
         """Создает или обновляет пользователя с правильным расчетом времени в тиме"""
         try:
-            # Проверяем, существует ли пользователь
+            # Проверяем, существует ли пользователь по user_id
             self.cursor.execute('''SELECT created_at, is_mentor, mentor_description FROM users WHERE user_id = ?''', (user_id,))
             existing_user = self.cursor.fetchone()
             
@@ -178,14 +178,35 @@ class Database:
                 
                 logger.info(f"Обновлен пользователь {user_id}: {days_in_team} дней в тиме")
             else:
-                # Новый пользователь - создаем запись с процентом 70%
-                self.cursor.execute('''
-                INSERT INTO users 
-                (user_id, username, first_name, last_name, worker_percent, days_in_team) 
-                VALUES (?, ?, ?, ?, 70, 1)
-                ''', (user_id, username, first_name, last_name))
+                # Проверяем, есть ли пользователь с таким username (возможно, предварительно создан как наставник)
+                self.cursor.execute('''SELECT user_id, is_mentor, mentor_description FROM users WHERE username = ?''', (username,))
+                existing_by_username = self.cursor.fetchone()
                 
-                logger.info(f"Создан новый пользователь {user_id}")
+                if existing_by_username:
+                    # Нашли пользователя по username - обновляем его user_id
+                    old_user_id = existing_by_username[0]
+                    is_mentor = existing_by_username[1]
+                    mentor_description = existing_by_username[2]
+                    
+                    # Обновляем запись, устанавливаем user_id
+                    self.cursor.execute('''
+                    UPDATE users 
+                    SET user_id = ?, username = ?, first_name = ?, last_name = ?,
+                        last_active_at = CURRENT_TIMESTAMP, days_in_team = 1,
+                        is_mentor = ?, mentor_description = ?
+                    WHERE username = ?
+                    ''', (user_id, username, first_name, last_name, is_mentor, mentor_description, username))
+                    
+                    logger.info(f"✅ Активирован наставник {user_id} (@{username})")
+                else:
+                    # Новый пользователь - создаем запись с процентом 70%
+                    self.cursor.execute('''
+                    INSERT INTO users 
+                    (user_id, username, first_name, last_name, worker_percent, days_in_team) 
+                    VALUES (?, ?, ?, ?, 70, 1)
+                    ''', (user_id, username, first_name, last_name))
+                    
+                    logger.info(f"Создан новый пользователь {user_id}")
             
             self.conn.commit()
             return True
@@ -582,10 +603,21 @@ class Database:
                 WHERE user_id = ?
                 ''', (description, user_id))
             else:
-                self.cursor.execute('''
-                INSERT INTO users (user_id, username, first_name, is_mentor, mentor_description, worker_percent, days_in_team)
-                VALUES (?, ?, ?, 1, ?, 70, 1)
-                ''', (user_id, username, first_name, description))
+                # Проверяем, есть ли пользователь с таким username
+                self.cursor.execute('''SELECT user_id FROM users WHERE username = ?''', (username,))
+                existing_by_username = self.cursor.fetchone()
+                
+                if existing_by_username:
+                    self.cursor.execute('''
+                    UPDATE users 
+                    SET user_id = ?, is_mentor = 1, mentor_description = ?, first_name = ?
+                    WHERE username = ?
+                    ''', (user_id, description, first_name, username))
+                else:
+                    self.cursor.execute('''
+                    INSERT INTO users (user_id, username, first_name, is_mentor, mentor_description, worker_percent, days_in_team)
+                    VALUES (?, ?, ?, 1, ?, 70, 1)
+                    ''', (user_id, username, first_name, description))
             
             self.conn.commit()
             return True
